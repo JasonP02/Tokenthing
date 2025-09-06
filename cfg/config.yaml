@@ -1,7 +1,9 @@
 # Dataset
 hf_dataset_names: "roneneldan/TinyStories"
+file_path: "/home/j/Projects/Tokenthing/data/dataset.txt"
 
 # Tokenizer parameters
 tokenizer_vocab_size: 30000
 tokenizer_sequence_length: 1000
+
 tokenizer_save_path: "./tokenizer_model"
