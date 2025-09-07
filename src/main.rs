@@ -1,24 +1,37 @@
-// Rust implementation of bpe
+//! # Tokenizer Training Implementation
+//! 
+//! This module implements a Byte Pair Encoding (BPE) tokenizer training pipeline.
+//! It loads text data, chunks it into manageable pieces, and processes it for tokenizer training.
 
-// Load dataset
 use std::{fs, vec};
 use serde::{Deserialize, Serialize};
 
+/// Configuration structure for tokenizer training parameters.
+/// 
+/// This struct contains all the necessary configuration options for training a tokenizer,
+/// including dataset information, vocabulary size, sequence length, and file paths.
 #[derive(Debug, Deserialize, Serialize)]
 struct Config {
+    /// Name of the Hugging Face dataset to use for training
     hf_dataset_names: String,
+    /// Target vocabulary size for the tokenizer
     tokenizer_vocab_size: u32,
+    /// Maximum sequence length for tokenizer training
     tokenizer_sequence_length: u32,
+    /// Path where the trained tokenizer will be saved
     tokenizer_save_path: String,
+    /// Path to the local text file for training
     file_path: String,
 }
 
+/// Loads configuration from a YAML file.
 fn load_config(config_path: &str) -> Result<Config, Box<dyn std::error::Error>> {
     let config_content = fs::read_to_string(config_path)?;
     let config: Config = serde_yaml::from_str(&config_content)?;
     Ok(config)
 }
 
+/// Loads and validates the configuration from the default config file.
 fn load_and_validate_config() -> Config {
     let config_path = "/home/j/Projects/Tokenthing/cfg/config.yaml";
     match load_config(config_path) {
@@ -33,79 +46,93 @@ fn load_and_validate_config() -> Config {
     }
 }
 
+/// This function takes raw text, chunks it into manageable pieces, and processes
+/// those chunks for tokenizer training
 fn train_tokenizer(text: &str, vocab_size: u32, tokenizer_seq_len: u32) -> Vec<u8> {
-    // Create initial vocab vector
-    let _vocab_vector = vec![0; vocab_size as usize];
-
-    // Process text in chunks of tokenizer_seq_len
-    let mut current_chunk = String::new(); // New string type for chunking
-    let mut chunk_count = 0; 
-    
-    for line in text.lines() {
-        // Check if adding this line would exceed the sequence length
-        if current_chunk.len() + line.len() + 1 > tokenizer_seq_len as usize {
-            // If current chunk is not empty, process it
-            if !current_chunk.is_empty() {
-                chunk_count += 1;
-                println!("Chunk {chunk_num} (length: {length}): {content}", 
-                         chunk_num = chunk_count, 
-                         length = current_chunk.len(), 
-                         content = current_chunk);
-                
-                // TODO: Process this chunk for tokenizer training
-                // process_chunk(&current_chunk);
-                
-                // Reset for next chunk
-                current_chunk.clear(); 
-            }
-            
-            // Handle the line that would exceed the sequence length
-            // Calculate how much space we have left in current chunk
-            let remaining_space = tokenizer_seq_len as usize - current_chunk.len();
-            
-            if remaining_space > 0 {
-                // Add as much of the line as we can fit
-                let (fits, overflow) = line.split_at(remaining_space);
-                current_chunk.push_str(fits);
-                
-                // Process the current chunk (it's now full)
-                chunk_count += 1;
-                println!("Chunk {chunk_num} (length: {length}): {content}", 
-                         chunk_num = chunk_count, 
-                         length = current_chunk.len(), 
-                         content = current_chunk);
-                
-                // Start new chunk with the overflow
-                current_chunk.clear();
-                current_chunk.push_str(overflow);
-            } else {
-                // Current chunk is already full, start new chunk with entire line
-                current_chunk = line.to_string();
-            }
-        } else {
-            // Add line to current chunk
-            if !current_chunk.is_empty() {
-                current_chunk.push('\n');
-            }
-            current_chunk.push_str(line);
-        }
-    }
-    
-    // Process the last chunk if it's not empty
-    if !current_chunk.is_empty() {
-        chunk_count += 1;
-        println!("Final chunk {chunk_num} (length: {length}): {content}", 
-                 chunk_num = chunk_count, 
-                 length = current_chunk.len(), 
-                 content = current_chunk);
-        // TODO: Process this chunk for tokenizer training
-        // process_chunk(&current_chunk);
-    }
-    
-    println!("Total chunks processed: {}", chunk_count);
+    let chunks = create_text_chunks(text, tokenizer_seq_len as usize);
+    process_chunks(chunks);
     
     // Return a copy of the input for now
     text.as_bytes().to_vec()
+}
+
+/// Calculates how much space is available in the current chunk for adding content.
+fn calculate_available_space(current_chunk: &str, max_chunk_size: usize) -> usize {
+    let space_left = max_chunk_size.saturating_sub(current_chunk.len());
+    let prefix_len = if current_chunk.is_empty() { 0 } else { 1 }; // newline
+    space_left.saturating_sub(prefix_len)
+}
+
+
+/// Starts a new chunk, saving the current one if it has content.
+fn start_new_chunk(chunks: &mut Vec<String>, current_chunk: String) -> String {
+    if !current_chunk.is_empty() {
+        chunks.push(current_chunk);
+    }
+    String::new()
+}
+
+/// Packs a line into chunks, splitting it across multiple chunks if necessary.
+fn pack_chunk(line: &str, chunks: &mut Vec<String>, current_chunk: &mut String, max_chunk_size: usize) {
+    let mut line_remaining = line;
+    
+    while !line_remaining.is_empty() {
+        // If current chunk is full, start a new one
+        if current_chunk.len() >= max_chunk_size {
+            *current_chunk = start_new_chunk(chunks, std::mem::take(current_chunk));
+        }
+        
+        // Calculate how much of the line we can fit
+        let space_needed = if current_chunk.is_empty() { 0 } else { 1 }; // newline
+        let space_available = max_chunk_size - current_chunk.len() - space_needed;
+        
+        if line_remaining.len() <= space_available {
+            // Entire line fits - add it and we're done with this line
+            if !current_chunk.is_empty() {
+                current_chunk.push('\n');
+            }
+            current_chunk.push_str(line_remaining);
+            break;
+        } else {
+            // Only part of line fits - add what we can and continue
+            let (fits, rest) = line_remaining.split_at(space_available);
+            if !current_chunk.is_empty() {
+                current_chunk.push('\n');
+            }
+            current_chunk.push_str(fits);
+            line_remaining = rest;
+        }
+    }
+}
+
+fn create_text_chunks(text: &str, max_chunk_size: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current_chunk = String::new();
+    
+    for line in text.lines() {
+        pack_chunk(line, &mut chunks, &mut current_chunk, max_chunk_size);
+    }
+    
+    if !current_chunk.is_empty() {
+        chunks.push(current_chunk);
+    }
+    
+    chunks
+}
+
+fn process_chunks(chunks: Vec<String>) {
+    for (index, chunk) in chunks.iter().enumerate() {
+        let chunk_num = index + 1;
+        println!("Chunk {chunk_num} (length: {length}): {content}", 
+                 chunk_num = chunk_num, 
+                 length = chunk.len(), 
+                 content = chunk);
+        
+        // TODO: Process this chunk for tokenizer training
+        // process_chunk(chunk);
+    }
+    
+    println!("Total chunks processed: {}", chunks.len());
 }
 
 fn main() {
