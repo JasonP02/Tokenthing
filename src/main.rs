@@ -3,7 +3,7 @@
 //! This module implements a Byte Pair Encoding (BPE) tokenizer training pipeline.
 //! It loads text data, chunks it into manageable pieces, and processes it for tokenizer training.
 
-use std::{fs, vec};
+use std::{fs, vec, io::{BufRead, BufReader}};
 use serde::{Deserialize, Serialize};
 
 /// Configuration structure for tokenizer training parameters.
@@ -46,21 +46,42 @@ fn load_and_validate_config() -> Config {
     }
 }
 
-/// This function takes raw text, chunks it into manageable pieces, and processes
-/// those chunks for tokenizer training
-fn train_tokenizer(text: &str, vocab_size: u32, tokenizer_seq_len: u32) -> Vec<u8> {
-    let chunks = create_text_chunks(text, tokenizer_seq_len as usize);
-    process_chunks(chunks);
-    
-    // Return a copy of the input for now
-    text.as_bytes().to_vec()
+/// This function trains a tokenizer on text data using a streaming approach
+fn train_tokenizer(file_path: &str, vocab_size: u32, tokenizer_seq_len: u32) -> Result<(), Box<dyn std::error::Error>> {
+    train_tokenizer_streaming(file_path, vocab_size, tokenizer_seq_len)
 }
 
-/// Calculates how much space is available in the current chunk for adding content.
-fn calculate_available_space(current_chunk: &str, max_chunk_size: usize) -> usize {
-    let space_left = max_chunk_size.saturating_sub(current_chunk.len());
-    let prefix_len = if current_chunk.is_empty() { 0 } else { 1 }; // newline
-    space_left.saturating_sub(prefix_len)
+fn train_tokenizer_streaming(file_path: &str, vocab_size: u32, tokenizer_seq_len: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let file = fs::File::open(file_path)?;
+    let reader = BufReader::new(file);
+    
+    let mut current_chunk = String::new();
+    let mut completed_chunks: Vec<String> = Vec::new();
+    const BATCH_SIZE: usize = 100;
+    
+    for line_result in reader.lines() {
+        let line = line_result?;
+        
+        // Reuse the existing chunking logic to fill completed_chunks
+        pack_chunk(&line, &mut completed_chunks, &mut current_chunk, tokenizer_seq_len as usize);
+        
+        // When we have enough completed chunks, process them and clear the buffer
+        if completed_chunks.len() >= BATCH_SIZE {
+            process_chunks(std::mem::take(&mut completed_chunks));
+        }
+    }
+    
+    // Flush the final in-progress chunk if it has content
+    if !current_chunk.is_empty() {
+        completed_chunks.push(current_chunk);
+    }
+    
+    // Process any remaining completed chunks
+    if !completed_chunks.is_empty() {
+        process_chunks(completed_chunks);
+    }
+    
+    Ok(())
 }
 
 
@@ -105,21 +126,6 @@ fn pack_chunk(line: &str, chunks: &mut Vec<String>, current_chunk: &mut String, 
     }
 }
 
-fn create_text_chunks(text: &str, max_chunk_size: usize) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current_chunk = String::new();
-    
-    for line in text.lines() {
-        pack_chunk(line, &mut chunks, &mut current_chunk, max_chunk_size);
-    }
-    
-    if !current_chunk.is_empty() {
-        chunks.push(current_chunk);
-    }
-    
-    chunks
-}
-
 fn process_chunks(chunks: Vec<String>) {
     for (index, chunk) in chunks.iter().enumerate() {
         let chunk_num = index + 1;
@@ -128,8 +134,10 @@ fn process_chunks(chunks: Vec<String>) {
                  length = chunk.len(), 
                  content = chunk);
         
-        // TODO: Process this chunk for tokenizer training
-        // process_chunk(chunk);
+        for chunk in chunks {
+            // iterate over text chunks and break them down into words with regex... or - should we split all words at once with regex
+            // now that i think about it, why do we have multiple 'chunks' if we are going to be processing as much text as possible with a regex pass?
+        }
     }
     
     println!("Total chunks processed: {}", chunks.len());
@@ -139,18 +147,15 @@ fn main() {
     // Load configuration
     let config = load_and_validate_config();
 
-    // Loading text using config
-    let content = fs::read_to_string(config.file_path);
-
-    // match is 
-    match content {
-        Ok(text) => {
-            train_tokenizer(&text, config.tokenizer_vocab_size, config.tokenizer_sequence_length);
+    // Train tokenizer (automatically chooses between in-memory and streaming approaches)
+    match train_tokenizer(&config.file_path, config.tokenizer_vocab_size, config.tokenizer_sequence_length) {
+        Ok(_) => {
+            println!("Tokenizer training completed successfully");
         }
         Err(e) => {
-            eprintln!("Error reading file: {}", e);
+            eprintln!("Error during tokenizer training: {}", e);
+            std::process::exit(1);
         }
     }
-
 }
 
