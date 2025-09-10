@@ -4,6 +4,6 @@ file_path: "/home/j/Projects/Tokenthing/data/dataset.txt"
 
 # Tokenizer parameters
 tokenizer_vocab_size: 30000
-tokenizer_sequence_length: 1000
+tokenizer_sequence_length: 50
 
 tokenizer_save_path: "./tokenizer_model"

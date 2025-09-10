@@ -10,3 +10,7 @@ serde_yaml = "0.9"
 [[bin]]
 name = "tokenthing"
 path = "src/main.rs"
+
+[[bin]]
+name = "main2"
+path = "src/main2.rs"
