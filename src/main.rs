@@ -1,4 +1,4 @@
-use std::{fs, io::{BufRead, BufReader}, collections::HashMap};
+use std::{collections::HashMap, env::current_exe, fs, io::{BufRead, BufReader}};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -19,35 +19,65 @@ fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
 fn pack_chunk(
     line: &str,
     chunks: &mut Vec<String>,
-    current_chunk: &mut String,
-    max_chunk_size: usize,)
-    -> Result<(), Box<dyn std::error::Error>> {
-    // Function for packing a mutable 'chunk' from lines of a text file into a max chunk size
-    let mut line_remaining = line;
+    current: &mut String,
+    max: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Centralized: always flush the same way
+    fn flush(chunks: &mut Vec<String>, cur: &mut String) {
+        if !cur.is_empty() {
+            chunks.push(std::mem::take(cur));
+        }
+    }
 
-    while !line_remaining.is_empty() {
-        // if chunk full, make a new chunk
-        if current_chunk.len() >= max_chunk_size {
-            chunks.push(current_chunk.drain(..).collect());
+    // Centralized: append piece, adding a newline iff chunk has prior content
+    fn append_piece(cur: &mut String, piece: &str) {
+        if !cur.is_empty() {
+            cur.push('\n');
+        }
+        cur.push_str(piece);
+    }
+
+    let mut remaining = line;
+
+    while !remaining.is_empty() {
+        if current.len() >= max {
+            flush(chunks, current);
+            continue;
         }
 
-        let line_prefix = if current_chunk.is_empty() {0} else {1}; // adding \n for additional lines in the same chunk
-        let space_available = max_chunk_size - current_chunk.len() - line_prefix; // calculation for how much text we can add
+        let needs_nl = !current.is_empty();
+        let nl_cost = if needs_nl { 1 } else { 0 };
 
-        current_chunk.push_str(line_remaining);
+        // If no space left even for the newline, flush and retry
+        if current.len() + nl_cost >= max {
+            flush(chunks, current);
+            continue;
+        }
 
-        if line_remaining.chars().count() <= space_available {
-            current_chunk.push_str(line_remaining);
+        let space = max - current.len() - nl_cost;
+
+        // Fast path: whole remainder fits
+        if remaining.len() <= space {
+            append_piece(current, remaining);
             break;
-        } else {
-            // if we will have overflow, we need to split by char
-            let fits = &line_remaining[..space_available.min(line_remaining.len())];
-            let rest = &line_remaining[fits.len()..];
-
-            current_chunk.push_str(fits);
-            line_remaining = rest;
-            }
         }
+
+        // Take largest valid UTF-8 prefix within byte budget
+        let mut end = space.min(remaining.len());
+        while end > 0 && !remaining.is_char_boundary(end) {
+            end -= 1;
+        }
+
+        if end == 0 {
+            // Couldn’t fit even one char (after accounting for newline) → flush
+            flush(chunks, current);
+            continue;
+        }
+
+        append_piece(current, &remaining[..end]);
+        remaining = &remaining[end..];
+    }
+
     Ok(())
 }
 
