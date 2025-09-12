@@ -1,11 +1,12 @@
-use std::{collections::HashMap, env::current_exe, fs, io::{BufRead, BufReader}};
+use std::{collections::{HashMap, LinkedList}, fs, io::{BufRead, BufReader}};
 use serde::{Deserialize, Serialize};
+use regex::Regex;
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Config {
     hf_dataset_names: String,
     file_path: String,
-    tokenizer_vocab_size: u32,
+    tokenizer_vocab_size: usize,
     tokenizer_sequence_length: usize,
 }
 
@@ -83,38 +84,79 @@ fn pack_chunk(
 
 fn process_chunks(
     chunks: Vec<String>,
-    vocab_size: u32,
+    vocab: &mut HashMap<String, u32>,
+    vocab_size: usize
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Inputs: chunks of text with size 'max_length'
+    // Processes chunks of text 
+    let mut pair_freqs: HashMap<(String, String), u32> = HashMap::new();
+    let re = apply_regex();
 
+    for chunk in chunks {
+        if vocab.len() >= vocab_size {break;}
+        let tokens: Vec<String> = pretokenize(&re, &chunk).map(|s|s.to_string()).collect();
+
+        // Add individual tokens to vocabulary
+        for token in &tokens {
+            *vocab.entry(token.clone()).or_insert(0) += 1;
+        }
+
+        // Count token pairs
+        for window in tokens.windows(2) {
+            let pair = (window[0].clone(), window[1].clone());
+            *pair_freqs.entry(pair).or_insert(0) += 1;
+        }
+    }
+    Ok(())
 }
 
+
+fn apply_regex() -> Regex {
+    Regex::new(r"'s|'t|'re|'ve|'m|'ll|'d|[\p{L}]+|[\p{N}]+|[^\s\p{L}\p{N}]+|\s+").unwrap()
+}
+
+fn pretokenize<'a>(pat: &'a Regex, text: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+    pat.find_iter(text).map(|m| m.as_str())
+}
 fn train_tokenizer(
     file_path: &str,
-    vocab_size: u32,
+    vocab_size: usize,
     seq_len: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut current_chunk = String::new();
+    let mut completed_chunks: Vec<String> = Vec::new();
+    let mut vocab: HashMap<String, u32> = HashMap::new();
+
+    const BATCH_SIZE: usize = 100;
+
+    loop {
         let file = fs::File::open(file_path)?;
         let reader = BufReader::new(file);
-
-        let mut current_chunk = String::new();
-        let mut completed_chunks : Vec<String> = Vec::new();
-        let mut vocab: HashMap<String, u32> = HashMap::new();
-
-        const BATCH_SIZE: usize = 100;
-
+        
         for line_result in reader.lines() {
-            let line = line_result?;
-            pack_chunk(&line, &mut completed_chunks, &mut current_chunk, seq_len)?;
+        let line = line_result?;
+        pack_chunk(&line, &mut completed_chunks, &mut current_chunk, seq_len)?;
 
-            if completed_chunks.len() > BATCH_SIZE {
-                // take the completed chunks from memory for us to use and to allow pack_chunk to keep packing
-
-                process_chunks(std::mem::take(&mut completed_chunks), vocab_size);
-            }
+        // Process batch when we have enough chunks
+        if completed_chunks.len() >= BATCH_SIZE {
+            process_chunks(std::mem::take(&mut completed_chunks), &mut vocab, vocab_size)?;
         }
-        Ok(())
     }
 
+    // Flush the final, not-yet-full chunk at EOF so the last lines are not lost
+    if !current_chunk.is_empty() {
+        completed_chunks.push(std::mem::take(&mut current_chunk));
+    }
+
+    // Now process any remaining chunks
+    if !completed_chunks.is_empty() {
+        process_chunks(std::mem::take(&mut completed_chunks), &mut vocab, vocab_size)?;
+    }
+
+    if vocab.len() >= vocab_size {break;}
+    }
+    Ok(())
+}
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config()?;
     train_tokenizer(
